@@ -6,7 +6,7 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-const PORT = process.env.PORT ?? 3001;
+const PORT = process.env.PORT ?? 3003;
 
 const SYMBOLS = [
   { symbol: "BTCUSDT", base: "BTC", quote: "USDT", ticker_id: "BTC-PERPUSDT", maker_fee: -0.0001, taker_fee: 0.0006 },
