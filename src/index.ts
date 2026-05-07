@@ -121,7 +121,7 @@ async function fetchFundingRates() {
 
 // ── BINANCE WS ────────────────────────────────────────────
 const BINANCE_STREAMS = SYMBOLS.map((s) => `${s.symbol.toLowerCase()}@ticker`).join("/");
-const BINANCE_WS_URL = `wss://stream.binance.com:9443/stream?streams=${BINANCE_STREAMS}`;
+const BINANCE_WS_URL = `wss://fstream.binance.com/stream?streams=${BINANCE_STREAMS}`;
 const SYMBOL_MAP = new Map(SYMBOLS.map((s) => [s.symbol, s]));
 
 let binanceWs: WebSocket | null = null;
