@@ -15,10 +15,7 @@ const SYMBOLS = [
 ];
 
 const GLOBAL_MULTIPLIER = parseFloat(process.env.VOLUME_MULTIPLIER ?? "1");
-const PER_SYMBOL_MULTIPLIER: Record<string, number> = {
-  // "BTC-PERPUSDT": 2.0,
-  // "ETH-PERPUSDT": 1.5,
-};
+const PER_SYMBOL_MULTIPLIER: Record<string, number> = {};
 
 function getMultiplier(ticker_id: string): number {
   return PER_SYMBOL_MULTIPLIER[ticker_id] ?? GLOBAL_MULTIPLIER;
@@ -80,67 +77,39 @@ const store = new Map<string, B2Ticker>();
 
 SYMBOLS.forEach((cfg) => {
   store.set(cfg.ticker_id, {
-    ticker_id:                   cfg.ticker_id,
-    base_currency:               cfg.base,
-    quote_currency:              cfg.quote,
-    last_price:                  null,
-    base_volume:                 null,
-    USD_volume:                  null,
-    quote_volume:                null,
-    bid:                         null,
-    ask:                         null,
-    high:                        null,
-    low:                         null,
-    product_type:                "Perpetual",
-    open_interest:               null,
-    open_interest_usd:           null,
-    index_price:                 null,
-    creation_timestamp:          null,
-    expiry_timestamp:            null,
-    funding_rate:                null,
-    next_funding_rate:           null,
-    next_funding_rate_timestamp: null,
-    maker_fee:                   cfg.maker_fee,
-    taker_fee:                   cfg.taker_fee,
-    price_change_24h:            null,
-    _provider:                   "binance",
-    _updated_at:                 Date.now(),
+    ticker_id: cfg.ticker_id, base_currency: cfg.base, quote_currency: cfg.quote,
+    last_price: null, base_volume: null, USD_volume: null, quote_volume: null,
+    bid: null, ask: null, high: null, low: null, product_type: "Perpetual",
+    open_interest: null, open_interest_usd: null, index_price: null,
+    creation_timestamp: null, expiry_timestamp: null,
+    funding_rate: null, next_funding_rate: null, next_funding_rate_timestamp: null,
+    maker_fee: cfg.maker_fee, taker_fee: cfg.taker_fee, price_change_24h: null,
+    _provider: "binance", _updated_at: Date.now(),
   });
 });
 
-// ── FUNDING RATE — REST se fetch (har 30s) ────────────────
-const FUNDING_URL = "https://fapi.binance.com/fapi/v1/premiumIndex";
-
+// ── FUNDING + OI — REST se har 30s ────────────────────────
 async function fetchFundingRates() {
   for (const cfg of SYMBOLS) {
     try {
-      // Premium index — funding rate + index price
       const premRes = await fetch(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${cfg.symbol}`);
       const prem: any = premRes.ok ? await premRes.json() : {};
-
-      // Open Interest
       const oiRes = await fetch(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${cfg.symbol}`);
       const oi: any = oiRes.ok ? await oiRes.json() : {};
-
       const existing = store.get(cfg.ticker_id);
       if (!existing) continue;
-
-      // OI in USD = OI contracts * last price
       const oiContracts = sf(oi.openInterest);
-      const lastPrice = existing.last_price;
-      const oiUsd = oiContracts != null && lastPrice != null ? oiContracts * lastPrice : null;
-
+      const oiUsd = oiContracts != null && existing.last_price != null ? oiContracts * existing.last_price : null;
       const updated: B2Ticker = {
         ...existing,
-        index_price:                 sf(prem.indexPrice),
-        funding_rate:                sf(prem.lastFundingRate),
-        next_funding_rate:           sf(prem.lastFundingRate),
+        index_price: sf(prem.indexPrice),
+        funding_rate: sf(prem.lastFundingRate),
+        next_funding_rate: sf(prem.lastFundingRate),
         next_funding_rate_timestamp: si(prem.nextFundingTime),
-        open_interest:               oiContracts,
-        open_interest_usd:           oiUsd,
-        _updated_at:                 Date.now(),
+        open_interest: oiContracts,
+        open_interest_usd: oiUsd,
+        _updated_at: Date.now(),
       };
-
       store.set(cfg.ticker_id, updated);
       broadcast(updated);
       console.log(`[Funding] ${cfg.symbol} — OI: ${oi.openInterest}, index: ${prem.indexPrice}`);
@@ -149,10 +118,10 @@ async function fetchFundingRates() {
     }
   }
 }
+
 // ── BINANCE WS ────────────────────────────────────────────
 const BINANCE_STREAMS = SYMBOLS.map((s) => `${s.symbol.toLowerCase()}@ticker`).join("/");
 const BINANCE_WS_URL = `wss://stream.binance.com:9443/stream?streams=${BINANCE_STREAMS}`;
-
 const SYMBOL_MAP = new Map(SYMBOLS.map((s) => [s.symbol, s]));
 
 let binanceWs: WebSocket | null = null;
@@ -164,19 +133,14 @@ let binanceStatus: "connecting" | "connected" | "disconnected" = "disconnected";
 function connectBinance() {
   binanceStatus = "connecting";
   console.log("[Binance] Connecting to:", BINANCE_WS_URL);
-
   binanceWs = new WebSocket(BINANCE_WS_URL);
 
   binanceWs.on("open", () => {
     binanceStatus = "connected";
     console.log("[Binance] Connected ✓");
-
-    // Ping every 20s
     binancePing = setInterval(() => {
       if (binanceWs?.readyState === WebSocket.OPEN) binanceWs.ping();
     }, 20000);
-
-    // Fetch funding rates immediately then every 30s
     fetchFundingRates();
     fundingTimer = setInterval(fetchFundingRates, 30000);
   });
@@ -187,28 +151,20 @@ function connectBinance() {
       const stream: string = msg.stream ?? "";
       const data = msg.data;
       if (!stream || !data) return;
-
       const symbolKey = stream.split("@")[0].toUpperCase();
       const cfg = SYMBOL_MAP.get(symbolKey);
       if (!cfg) return;
-
       const existing = store.get(cfg.ticker_id)!;
-
       if (stream.includes("@ticker")) {
         const updated: B2Ticker = {
           ...existing,
-          last_price:       sf(data.c),
-          base_volume:      sf(data.v),
-          USD_volume:       sf(data.q),
-          quote_volume:     sf(data.q),
-          bid:              sf(data.b),
-          ask:              sf(data.a),
-          high:             sf(data.h),
-          low:              sf(data.l),
-          price_change_24h: sf(data.P), // direct percent from Binance
-          _updated_at:      Date.now(),
+          last_price: sf(data.c), base_volume: sf(data.v),
+          USD_volume: sf(data.q), quote_volume: sf(data.q),
+          bid: sf(data.b), ask: sf(data.a),
+          high: sf(data.h), low: sf(data.l),
+          price_change_24h: sf(data.P),
+          _updated_at: Date.now(),
         };
-
         store.set(cfg.ticker_id, updated);
         broadcast(updated);
       }
@@ -217,9 +173,7 @@ function connectBinance() {
     }
   });
 
-  binanceWs.on("error", (err) => {
-    console.error("[Binance] Error:", err.message);
-  });
+  binanceWs.on("error", (err) => { console.error("[Binance] Error:", err.message); });
 
   binanceWs.on("close", (code) => {
     binanceStatus = "disconnected";
@@ -243,27 +197,16 @@ const clients = new Set<WebSocket>();
 wss.on("connection", (ws) => {
   clients.add(ws);
   console.log(`[WSS] Client connected — total: ${clients.size}`);
-
   const snapshot = Array.from(store.values()).map(applyMultiplier);
   ws.send(JSON.stringify({ type: "snapshot", data: snapshot, timestamp: Date.now() }));
-
-  ws.on("close", () => {
-    clients.delete(ws);
-    console.log(`[WSS] Client disconnected — total: ${clients.size}`);
-  });
-
-  ws.on("error", (err) => {
-    console.error("[WSS] Client error:", err.message);
-    clients.delete(ws);
-  });
+  ws.on("close", () => { clients.delete(ws); console.log(`[WSS] Client disconnected — total: ${clients.size}`); });
+  ws.on("error", (err) => { console.error("[WSS] Client error:", err.message); clients.delete(ws); });
 });
 
 function broadcast(ticker: B2Ticker) {
   if (clients.size === 0) return;
   const msg = JSON.stringify({ type: "update", data: [applyMultiplier(ticker)], timestamp: Date.now() });
-  clients.forEach((ws) => {
-    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
-  });
+  clients.forEach((ws) => { if (ws.readyState === WebSocket.OPEN) ws.send(msg); });
 }
 
 // ── REST ──────────────────────────────────────────────────
@@ -274,6 +217,135 @@ app.get("/api/tickers", (_req, res) => {
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", binance: binanceStatus, clients: clients.size, symbols: store.size, timestamp: Date.now() });
+});
+
+// ── INDEX PAGE — server status ─────────────────────────────
+app.get("/", (_req, res) => {
+  const data = Array.from(store.values()).map(applyMultiplier);
+  const isConnected = binanceStatus === "connected";
+  res.send(`<!DOCTYPE html>
+<html>
+<head>
+  <title>DerivData WS Server</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:monospace;background:#0a0d12;color:#e2e8f0;padding:40px}
+    h1{color:#3b82f6;margin-bottom:24px;font-size:22px}
+    .green{color:#22c55e}.red{color:#ef4444}.gray{color:#64748b}.blue{color:#3b82f6}
+    .box{background:#111827;border:1px solid #1f2937;border-radius:10px;padding:20px;margin-bottom:20px}
+    .box h2{font-size:11px;color:#64748b;margin-bottom:16px;text-transform:uppercase;letter-spacing:1px}
+    .row{display:flex;gap:32px;flex-wrap:wrap}
+    .stat{min-width:120px}
+    .stat span{color:#64748b;font-size:11px;display:block;margin-bottom:4px}
+    .stat p{font-size:15px;font-weight:bold}
+    a{color:#3b82f6;text-decoration:none}
+    a:hover{text-decoration:underline}
+    table{width:100%;border-collapse:collapse}
+    th{text-align:right;color:#475569;font-size:10px;padding:10px 12px;border-bottom:1px solid #1f2937;text-transform:uppercase;letter-spacing:.5px}
+    th:first-child{text-align:left}
+    td{padding:12px;border-bottom:1px solid #0f172a;font-size:12px;text-align:right}
+    td:first-child{text-align:left}
+    tr:last-child td{border-bottom:none}
+    tr:hover td{background:#0d1117}
+    .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle}
+    .dot-green{background:#22c55e;box-shadow:0 0 6px #22c55e;animation:pulse 1.5s infinite}
+    .dot-red{background:#ef4444}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+    .badge{display:inline-block;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:bold}
+    .badge-green{background:#14532d;color:#4ade80;border:1px solid #166534}
+    .badge-red{background:#450a0a;color:#f87171;border:1px solid #7f1d1d}
+  </style>
+</head>
+<body>
+  <h1>⚡ DerivData WebSocket Server</h1>
+
+  <div class="box">
+    <h2>Server Status</h2>
+    <div class="row">
+      <div class="stat">
+        <span>Binance Feed</span>
+        <p>
+          <span class="dot ${isConnected ? "dot-green" : "dot-red"}"></span>
+          <span class="${isConnected ? "green" : "red"}">${binanceStatus}</span>
+        </p>
+      </div>
+      <div class="stat">
+        <span>WS Clients Connected</span>
+        <p class="blue">${clients.size}</p>
+      </div>
+      <div class="stat">
+        <span>Active Symbols</span>
+        <p class="blue">${data.length}</p>
+      </div>
+      <div class="stat">
+        <span>Volume Multiplier</span>
+        <p class="green">${GLOBAL_MULTIPLIER}x</p>
+      </div>
+      <div class="stat">
+        <span>Server Time</span>
+        <p style="font-size:12px">${new Date().toUTCString()}</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="box">
+    <h2>Endpoints</h2>
+    <div class="row">
+      <div class="stat">
+        <span>WebSocket URL</span>
+        <p>wss://your-domain<strong>/ws</strong></p>
+      </div>
+      <div class="stat">
+        <span>B2 Tickers REST</span>
+        <p><a href="/api/tickers">/api/tickers</a></p>
+      </div>
+      <div class="stat">
+        <span>Health Check</span>
+        <p><a href="/api/health">/api/health</a></p>
+      </div>
+    </div>
+  </div>
+
+  <div class="box">
+    <h2>Live Market Data</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Ticker</th>
+          <th>Last Price</th>
+          <th>24h Change</th>
+          <th>Volume (USD)</th>
+          <th>Open Interest</th>
+          <th>Index Price</th>
+          <th>Funding Rate</th>
+          <th>Next Funding</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${data.map((t) => {
+          const chg = t.price_change_24h ?? 0;
+          const fr = t.funding_rate ?? 0;
+          return `<tr>
+            <td>
+              <strong>${t.ticker_id}</strong><br>
+              <span class="gray" style="font-size:10px">${t.base_currency} / ${t.quote_currency} · Perpetual</span>
+            </td>
+            <td><strong>$${t.last_price?.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 }) ?? "—"}</strong></td>
+            <td class="${chg >= 0 ? "green" : "red"}">${t.price_change_24h != null ? (chg >= 0 ? "+" : "") + chg.toFixed(2) + "%" : "—"}</td>
+            <td>${t.USD_volume != null ? "$" + (t.USD_volume / 1e9).toFixed(2) + "B" : "—"}</td>
+            <td>${t.open_interest_usd != null ? "$" + (t.open_interest_usd / 1e9).toFixed(2) + "B" : "—"}</td>
+            <td>${t.index_price != null ? "$" + t.index_price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 }) : "—"}</td>
+            <td class="${fr >= 0 ? "green" : "red"}">${t.funding_rate != null ? (fr * 100).toFixed(4) + "%" : "—"}</td>
+            <td>${t.next_funding_rate_timestamp != null ? new Date(t.next_funding_rate_timestamp).toLocaleTimeString() : "—"}</td>
+          </tr>`;
+        }).join("")}
+      </tbody>
+    </table>
+  </div>
+
+  <script>setTimeout(() => location.reload(), 5000);</script>
+</body>
+</html>`);
 });
 
 // ── START ─────────────────────────────────────────────────
