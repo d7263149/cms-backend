@@ -400,6 +400,12 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
+
+
+
+
+
+
 app.get("/", (_req, res) => {
   const data = Array.from(store.values()).map(applyMultiplier);
   const wsOpen = Array.from(wsConnections.values()).filter(s => s.ws.readyState === WebSocket.OPEN).length;
