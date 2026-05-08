@@ -203,6 +203,7 @@ function subscribeRealtime() {
           console.log(`[Config]    Broadcasting to ${clients.size} client(s)...`);
           logDivider();
           broadcastAllTickers();
+          SYMBOLS.forEach((s) => broadcastB2(s.ticker_id));
         } else {
           console.warn("[Config] ⚠️  REALTIME: received invalid multiplier value:", (payload.new as any).value);
         }
@@ -256,6 +257,7 @@ function subscribeRealtime() {
 
         console.log(`[Symbols] Broadcasting updated data to ${clients.size} client(s)...`);
         broadcastAllTickers();
+        SYMBOLS.forEach((s) => broadcastB2(s.ticker_id));
       }
     )
     .subscribe((status) => {
@@ -315,6 +317,7 @@ function connectSymbol(cfg: SymbolConfig) {
     };
     store.set(tickerId, updated);
     broadcast(updated);
+    broadcastB2(tickerId); // ← ye add karo
   });
 
   const bookUrl = `wss://fstream.binance.com/public/ws/${sym}@bookTicker`;
@@ -356,17 +359,53 @@ app.use(cors());
 app.use(express.json());
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: "/b1" });
-const clients = new Set<WebSocket>();
+
+const wss  = new WebSocketServer({ noServer: true });
+const wss2 = new WebSocketServer({ noServer: true });
+const clients  = new Set<WebSocket>();
+const clients2 = new Set<WebSocket>();
 
 wss.on("connection", (ws) => {
   clients.add(ws);
-  console.log(`[WSS] Client connected — total: ${clients.size}`);
+  console.log(`[B1] Client connected — total: ${clients.size}`);
   const snapshot = Array.from(store.values()).map(applyMultiplier);
   ws.send(JSON.stringify({ type: "snapshot", data: snapshot, timestamp: Date.now() }));
-  ws.on("close", () => { clients.delete(ws); console.log(`[WSS] Client disconnected — total: ${clients.size}`); });
-  ws.on("error", (err) => { console.error("[WSS] error:", err.message); clients.delete(ws); });
+  ws.on("close", () => { clients.delete(ws); console.log(`[B1] Client disconnected — total: ${clients.size}`); });
+  ws.on("error", (err) => { console.error("[B1] error:", err.message); clients.delete(ws); });
 });
+
+wss2.on("connection", (ws) => {
+  clients2.add(ws);
+  console.log(`[B2] Client connected — total: ${clients2.size}`);
+  const snapshot = SYMBOLS.map((s) => ({
+    ticker_id: s.ticker_id,
+    contract_type: "Vanilla",
+    contract_price: store.get(s.ticker_id)?.last_price ?? null,
+    contract_price_currency: s.quote,
+  }));
+  ws.send(JSON.stringify({ type: "snapshot", data: snapshot, timestamp: Date.now() }));
+  ws.on("close", () => { clients2.delete(ws); console.log(`[B2] Client disconnected — total: ${clients2.size}`); });
+  ws.on("error", (err) => { console.error("[B2] error:", err.message); clients2.delete(ws); });
+});
+
+
+// Manually upgrade handle karo
+server.on("upgrade", (request, socket, head) => {
+  const pathname = new URL(request.url!, `http://${request.headers.host}`).pathname;
+
+  if (pathname === "/b1") {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit("connection", ws, request);
+    });
+  } else if (pathname === "/b2") {
+    wss2.handleUpgrade(request, socket, head, (ws) => {
+      wss2.emit("connection", ws, request);
+    });
+  } else {
+    socket.destroy();
+  }
+});
+
 
 function broadcast(ticker: B2Ticker) {
   if (clients.size === 0) return;
@@ -378,7 +417,22 @@ function broadcastAllTickers() {
   if (clients.size === 0) return;
   store.forEach((ticker) => broadcast(ticker));
 }
-
+function broadcastB2(ticker_id: string) {
+  if (clients2.size === 0) return;
+  const sym = SYMBOLS.find((s) => s.ticker_id === ticker_id);
+  if (!sym) return;
+  const msg = JSON.stringify({
+    type: "update",
+    data: [{
+      ticker_id: sym.ticker_id,
+      contract_type: "Vanilla",
+      contract_price: store.get(ticker_id)?.last_price ?? null,
+      contract_price_currency: sym.quote,
+    }],
+    timestamp: Date.now(),
+  });
+  clients2.forEach((ws) => { if (ws.readyState === WebSocket.OPEN) ws.send(msg); });
+}
 // ── REST ──────────────────────────────────────────────────
 app.get("/api/tickers", (_req, res) => {
   const data = Array.from(store.values()).map(applyMultiplier);
@@ -399,6 +453,7 @@ app.get("/api/health", (_req, res) => {
     timestamp: Date.now(),
   });
 });
+
 
 
 
@@ -497,7 +552,7 @@ app.get("/", (_req, res) => {
 </body>
 </html>`);
 });
-
+console.log("WS paths:", (server as any)._events);
 // ── START ─────────────────────────────────────────────────
 server.listen(PORT, async () => {
   logDivider();
