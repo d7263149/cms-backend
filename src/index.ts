@@ -12,9 +12,13 @@ const PORT = process.env.PORT ?? 3001;
 // ── SUPABASE ───────────────────────────────────────────────
 const supabase = createClient(
   process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  {
+    realtime: {
+      transport: WebSocket as any,
+    },
+  }
 );
-
 // ── TYPES ─────────────────────────────────────────────────
 interface SymbolConfig {
   symbol: string;
