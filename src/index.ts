@@ -78,10 +78,14 @@ function si(v: any): number | null {
   return isNaN(n) ? null : n;
 }
 
+// function getMultiplier(ticker_id: string): number {
+//   const sym = SYMBOLS.find((s) => s.ticker_id === ticker_id);
+//   const perSym = sym?.volume_multiplier ?? 1;
+//   return perSym * GLOBAL_MULTIPLIER;
+// }
+
 function getMultiplier(ticker_id: string): number {
-  const sym = SYMBOLS.find((s) => s.ticker_id === ticker_id);
-  const perSym = sym?.volume_multiplier ?? 1;
-  return perSym * GLOBAL_MULTIPLIER;
+  return GLOBAL_MULTIPLIER;
 }
 
 function applyMultiplier(t: B2Ticker): B2Ticker {
