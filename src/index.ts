@@ -63,6 +63,7 @@ interface B2Ticker {
 let GLOBAL_MULTIPLIER = 1;
 let SYMBOLS: SymbolConfig[] = [];
 const store = new Map<string, B2Ticker>();
+const orderBookStore = new Map<string, { bids: [number, number][]; asks: [number, number][]; timestamp: number }>();
 const wsConnections = new Map<string, { ws: WebSocket; retry: number }>();
 
 // ── HELPERS ───────────────────────────────────────────────
@@ -332,6 +333,32 @@ function connectSymbol(cfg: SymbolConfig) {
     store.set(tickerId, updated);
     broadcast(updated);
   });
+
+const depthUrl = `wss://fstream.binance.com/public/ws/${sym}@depth20@100ms`;
+
+// // 50 levels (requirement ke hisab se)
+// const depthUrl = `wss://fstream.binance.com/public/ws/${sym}@depth@100ms`;
+
+
+
+connectWS(`depth_${sym}`, depthUrl, (data) => {
+  // data.b = bids [[price, qty], ...], data.a = asks
+  const bids: [number, number][] = (data.b ?? [])
+    .slice(0, 50)
+    .map((b: string[]) => [parseFloat(b[0]), parseFloat(b[1])]);
+  const asks: [number, number][] = (data.a ?? [])
+    .slice(0, 50)
+    .map((a: string[]) => [parseFloat(a[0]), parseFloat(a[1])]);
+  
+  orderBookStore.set(tickerId, {
+    bids,
+    asks,
+    timestamp: Date.now(),
+  });
+  broadcastB3(tickerId);
+});
+
+
 }
 
 function connectWS(name: string, url: string, onMessage: (data: any) => void) {
@@ -362,9 +389,13 @@ const server = http.createServer(app);
 
 const wss  = new WebSocketServer({ noServer: true });
 const wss2 = new WebSocketServer({ noServer: true });
+const wss3 = new WebSocketServer({ noServer: true });
+
+
+
 const clients  = new Set<WebSocket>();
 const clients2 = new Set<WebSocket>();
-
+const clients3 = new Set<WebSocket>();
 wss.on("connection", (ws) => {
   clients.add(ws);
   console.log(`[B1] Client connected — total: ${clients.size}`);
@@ -388,7 +419,23 @@ wss2.on("connection", (ws) => {
   ws.on("error", (err) => { console.error("[B2] error:", err.message); clients2.delete(ws); });
 });
 
-
+wss3.on("connection", (ws) => {
+  clients3.add(ws);
+  console.log(`[B3] Client connected — total: ${clients3.size}`);
+  // Snapshot — saare symbols ka current order book
+  const snapshot = SYMBOLS.map((s) => {
+    const ob = orderBookStore.get(s.ticker_id);
+    return {
+      ticker_id: s.ticker_id,
+      timestamp: ob?.timestamp ?? Date.now(),
+      bids: ob?.bids ?? [],
+      asks: ob?.asks ?? [],
+    };
+  });
+  ws.send(JSON.stringify({ type: "snapshot", data: snapshot, timestamp: Date.now() }));
+  ws.on("close", () => { clients3.delete(ws); console.log(`[B3] Client disconnected — total: ${clients3.size}`); });
+  ws.on("error", (err) => { console.error("[B3] error:", err.message); clients3.delete(ws); });
+});
 // Manually upgrade handle karo
 server.on("upgrade", (request, socket, head) => {
   const pathname = new URL(request.url!, `http://${request.headers.host}`).pathname;
@@ -401,7 +448,11 @@ server.on("upgrade", (request, socket, head) => {
     wss2.handleUpgrade(request, socket, head, (ws) => {
       wss2.emit("connection", ws, request);
     });
-  } else {
+  } else if (pathname === "/b3") {
+  wss3.handleUpgrade(request, socket, head, (ws) => {
+    wss3.emit("connection", ws, request);
+  });
+} else {
     socket.destroy();
   }
 });
@@ -432,6 +483,24 @@ function broadcastB2(ticker_id: string) {
     timestamp: Date.now(),
   });
   clients2.forEach((ws) => { if (ws.readyState === WebSocket.OPEN) ws.send(msg); });
+}
+
+
+function broadcastB3(ticker_id: string) {
+  if (clients3.size === 0) return;
+  const ob = orderBookStore.get(ticker_id);
+  if (!ob) return;
+  const msg = JSON.stringify({
+    type: "update",
+    data: [{
+      ticker_id,
+      timestamp: ob.timestamp,
+      bids: ob.bids,
+      asks: ob.asks,
+    }],
+    timestamp: Date.now(),
+  });
+  clients3.forEach((ws) => { if (ws.readyState === WebSocket.OPEN) ws.send(msg); });
 }
 // ── REST ──────────────────────────────────────────────────
 app.get("/api/tickers", (_req, res) => {
