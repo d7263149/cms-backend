@@ -19,6 +19,7 @@ const supabase = createClient(
     },
   }
 );
+
 // ── TYPES ─────────────────────────────────────────────────
 interface SymbolConfig {
   symbol: string;
@@ -79,29 +80,20 @@ function si(v: any): number | null {
   return isNaN(n) ? null : n;
 }
 
-// function getMultiplier(ticker_id: string): number {
-//   const sym = SYMBOLS.find((s) => s.ticker_id === ticker_id);
-//   const perSym = sym?.volume_multiplier ?? 1;
-//   return perSym * GLOBAL_MULTIPLIER;
-// }
-
-function getMultiplier(ticker_id: string): number {
-  return GLOBAL_MULTIPLIER;
-}
-
-function applyMultiplier(t: B2Ticker): B2Ticker {
-  const m = getMultiplier(t.ticker_id);
-  if (m === 1) return t;
-  return {
-    ...t,
-    base_volume:  t.base_volume  != null ? t.base_volume  * m : null,
-    USD_volume:   t.USD_volume   != null ? t.USD_volume   * m : null,
-    quote_volume: t.quote_volume != null ? t.quote_volume * m : null,
-  };
-}
-
 function logDivider() {
   console.log("─".repeat(50));
+}
+
+// FIX: Multiplier sirf volume (base_volume, USD_volume, quote_volume) pe lagega
+// last_price, bid, ask, high, low, open_interest etc pe NAHI lagega
+function applyMultiplier(t: B2Ticker): B2Ticker {
+  if (GLOBAL_MULTIPLIER === 1) return t;
+  return {
+    ...t,
+    base_volume:  t.base_volume  != null ? t.base_volume  * GLOBAL_MULTIPLIER : null,
+    USD_volume:   t.USD_volume   != null ? t.USD_volume   * GLOBAL_MULTIPLIER : null,
+    quote_volume: t.quote_volume != null ? t.quote_volume * GLOBAL_MULTIPLIER : null,
+  };
 }
 
 // ── SUPABASE: LOAD CONFIG ─────────────────────────────────
@@ -156,13 +148,12 @@ async function loadSymbols() {
   logDivider();
   console.log("[Symbols] ✅ Active symbols loaded from Supabase:");
   SYMBOLS.forEach((s) => {
-    console.log(`[Symbols]    ${s.ticker_id} | sym_multiplier: ${s.volume_multiplier}x | maker: ${s.maker_fee} | taker: ${s.taker_fee}`);
+    console.log(`[Symbols]    ${s.ticker_id} | maker: ${s.maker_fee} | taker: ${s.taker_fee}`);
   });
   console.log(`[Symbols]    Previously: ${prev}`);
   console.log(`[Symbols]    Now:        ${SYMBOLS.map((s) => s.ticker_id).join(", ")}`);
   logDivider();
 
-  // Initialize store for new symbols
   SYMBOLS.forEach((cfg) => {
     if (!store.has(cfg.ticker_id)) {
       store.set(cfg.ticker_id, {
@@ -186,7 +177,6 @@ async function loadSymbols() {
 
 // ── SUPABASE: REALTIME ────────────────────────────────────
 function subscribeRealtime() {
-  // 1. Global multiplier change
   supabase
     .channel("config-changes")
     .on(
@@ -201,7 +191,7 @@ function subscribeRealtime() {
           console.log("[Config] 🔄 REALTIME: global_volume_multiplier changed!");
           console.log(`[Config]    Old value: ${oldVal}x`);
           console.log(`[Config]    New value: ${GLOBAL_MULTIPLIER}x`);
-          console.log(`[Config]    Broadcasting to ${clients.size} client(s)...`);
+          console.log(`[Config]    Broadcasting to ${clients.size} B1 + ${clients2.size} B2 client(s)...`);
           logDivider();
           broadcastAllTickers();
           SYMBOLS.forEach((s) => broadcastB2(s.ticker_id));
@@ -214,7 +204,6 @@ function subscribeRealtime() {
       console.log(`[Config] Supabase Realtime channel status: ${status}`);
     });
 
-  // 2. Symbol changes
   supabase
     .channel("symbols-changes")
     .on(
@@ -229,18 +218,12 @@ function subscribeRealtime() {
           console.log(`[Symbols]    Affected:   ${changedRow.ticker_id}`);
           if (payload.eventType === "UPDATE") {
             const oldRow = payload.old as any;
-            if (oldRow?.volume_multiplier !== changedRow?.volume_multiplier) {
-              console.log(`[Symbols]    volume_multiplier: ${oldRow?.volume_multiplier}x → ${changedRow?.volume_multiplier}x`);
-            }
-            if (oldRow?.is_active !== changedRow?.is_active) {
+            if (oldRow?.is_active !== changedRow?.is_active)
               console.log(`[Symbols]    is_active: ${oldRow?.is_active} → ${changedRow?.is_active}`);
-            }
-            if (oldRow?.maker_fee !== changedRow?.maker_fee) {
+            if (oldRow?.maker_fee !== changedRow?.maker_fee)
               console.log(`[Symbols]    maker_fee: ${oldRow?.maker_fee} → ${changedRow?.maker_fee}`);
-            }
-            if (oldRow?.taker_fee !== changedRow?.taker_fee) {
+            if (oldRow?.taker_fee !== changedRow?.taker_fee)
               console.log(`[Symbols]    taker_fee: ${oldRow?.taker_fee} → ${changedRow?.taker_fee}`);
-            }
           }
         }
         console.log(`[Symbols]    Reloading all active symbols...`);
@@ -248,7 +231,6 @@ function subscribeRealtime() {
 
         await loadSymbols();
 
-        // Naye symbols ke liye Binance WS connect karo
         SYMBOLS.forEach((cfg) => {
           if (!wsConnections.has(`ticker_${cfg.symbol}`)) {
             console.log(`[Symbols] 🆕 New symbol detected — connecting Binance WS: ${cfg.ticker_id}`);
@@ -256,7 +238,7 @@ function subscribeRealtime() {
           }
         });
 
-        console.log(`[Symbols] Broadcasting updated data to ${clients.size} client(s)...`);
+        console.log(`[Symbols] Broadcasting to ${clients.size} B1 + ${clients2.size} B2 client(s)...`);
         broadcastAllTickers();
         SYMBOLS.forEach((s) => broadcastB2(s.ticker_id));
       }
@@ -318,7 +300,7 @@ function connectSymbol(cfg: SymbolConfig) {
     };
     store.set(tickerId, updated);
     broadcast(updated);
-    broadcastB2(tickerId); // ← ye add karo
+    broadcastB2(tickerId);
   });
 
   const bookUrl = `wss://fstream.binance.com/public/ws/${sym}@bookTicker`;
@@ -334,31 +316,17 @@ function connectSymbol(cfg: SymbolConfig) {
     broadcast(updated);
   });
 
-const depthUrl = `wss://fstream.binance.com/public/ws/${sym}@depth20@100ms`;
-
-// // 50 levels (requirement ke hisab se)
-// const depthUrl = `wss://fstream.binance.com/public/ws/${sym}@depth@100ms`;
-
-
-
-connectWS(`depth_${sym}`, depthUrl, (data) => {
-  // data.b = bids [[price, qty], ...], data.a = asks
-  const bids: [number, number][] = (data.b ?? [])
-    .slice(0, 50)
-    .map((b: string[]) => [parseFloat(b[0]), parseFloat(b[1])]);
-  const asks: [number, number][] = (data.a ?? [])
-    .slice(0, 50)
-    .map((a: string[]) => [parseFloat(a[0]), parseFloat(a[1])]);
-  
-  orderBookStore.set(tickerId, {
-    bids,
-    asks,
-    timestamp: Date.now(),
+  const depthUrl = `wss://fstream.binance.com/public/ws/${sym}@depth20@100ms`;
+  connectWS(`depth_${sym}`, depthUrl, (data) => {
+    const bids: [number, number][] = (data.b ?? [])
+      .slice(0, 50)
+      .map((b: string[]) => [parseFloat(b[0]), parseFloat(b[1])]);
+    const asks: [number, number][] = (data.a ?? [])
+      .slice(0, 50)
+      .map((a: string[]) => [parseFloat(a[0]), parseFloat(a[1])]);
+    orderBookStore.set(tickerId, { bids, asks, timestamp: Date.now() });
+    broadcastB3(tickerId);
   });
-  broadcastB3(tickerId);
-});
-
-
 }
 
 function connectWS(name: string, url: string, onMessage: (data: any) => void) {
@@ -391,14 +359,14 @@ const wss  = new WebSocketServer({ noServer: true });
 const wss2 = new WebSocketServer({ noServer: true });
 const wss3 = new WebSocketServer({ noServer: true });
 
-
-
 const clients  = new Set<WebSocket>();
 const clients2 = new Set<WebSocket>();
 const clients3 = new Set<WebSocket>();
+
 wss.on("connection", (ws) => {
   clients.add(ws);
   console.log(`[B1] Client connected — total: ${clients.size}`);
+  // FIX: applyMultiplier se snapshot bhejo — REST aur WS same data
   const snapshot = Array.from(store.values()).map(applyMultiplier);
   ws.send(JSON.stringify({ type: "snapshot", data: snapshot, timestamp: Date.now() }));
   ws.on("close", () => { clients.delete(ws); console.log(`[B1] Client disconnected — total: ${clients.size}`); });
@@ -422,7 +390,6 @@ wss2.on("connection", (ws) => {
 wss3.on("connection", (ws) => {
   clients3.add(ws);
   console.log(`[B3] Client connected — total: ${clients3.size}`);
-  // Snapshot — saare symbols ka current order book
   const snapshot = SYMBOLS.map((s) => {
     const ob = orderBookStore.get(s.ticker_id);
     return {
@@ -436,28 +403,21 @@ wss3.on("connection", (ws) => {
   ws.on("close", () => { clients3.delete(ws); console.log(`[B3] Client disconnected — total: ${clients3.size}`); });
   ws.on("error", (err) => { console.error("[B3] error:", err.message); clients3.delete(ws); });
 });
-// Manually upgrade handle karo
+
 server.on("upgrade", (request, socket, head) => {
   const pathname = new URL(request.url!, `http://${request.headers.host}`).pathname;
-
   if (pathname === "/b1") {
-    wss.handleUpgrade(request, socket, head, (ws) => {
-      wss.emit("connection", ws, request);
-    });
+    wss.handleUpgrade(request, socket, head, (ws) => wss.emit("connection", ws, request));
   } else if (pathname === "/b2") {
-    wss2.handleUpgrade(request, socket, head, (ws) => {
-      wss2.emit("connection", ws, request);
-    });
+    wss2.handleUpgrade(request, socket, head, (ws) => wss2.emit("connection", ws, request));
   } else if (pathname === "/b3") {
-  wss3.handleUpgrade(request, socket, head, (ws) => {
-    wss3.emit("connection", ws, request);
-  });
-} else {
+    wss3.handleUpgrade(request, socket, head, (ws) => wss3.emit("connection", ws, request));
+  } else {
     socket.destroy();
   }
 });
 
-
+// FIX: broadcast mein applyMultiplier — WS aur REST same
 function broadcast(ticker: B2Ticker) {
   if (clients.size === 0) return;
   const msg = JSON.stringify({ type: "update", data: [applyMultiplier(ticker)], timestamp: Date.now() });
@@ -468,6 +428,7 @@ function broadcastAllTickers() {
   if (clients.size === 0) return;
   store.forEach((ticker) => broadcast(ticker));
 }
+
 function broadcastB2(ticker_id: string) {
   if (clients2.size === 0) return;
   const sym = SYMBOLS.find((s) => s.ticker_id === ticker_id);
@@ -485,24 +446,52 @@ function broadcastB2(ticker_id: string) {
   clients2.forEach((ws) => { if (ws.readyState === WebSocket.OPEN) ws.send(msg); });
 }
 
-
 function broadcastB3(ticker_id: string) {
   if (clients3.size === 0) return;
   const ob = orderBookStore.get(ticker_id);
   if (!ob) return;
   const msg = JSON.stringify({
     type: "update",
-    data: [{
-      ticker_id,
-      timestamp: ob.timestamp,
-      bids: ob.bids,
-      asks: ob.asks,
-    }],
+    data: [{ ticker_id, timestamp: ob.timestamp, bids: ob.bids, asks: ob.asks }],
     timestamp: Date.now(),
   });
   clients3.forEach((ws) => { if (ws.readyState === WebSocket.OPEN) ws.send(msg); });
 }
-// ── REST ──────────────────────────────────────────────────
+
+// ── REST — same data jo WS mein jaata hai ─────────────────
+
+// B1 — full ticker with multiplier applied (same as WS)
+app.get("/api/b1", (_req, res) => {
+  const data = Array.from(store.values()).map(applyMultiplier);
+  res.json({ success: true, count: data.length, data, timestamp: Date.now() });
+});
+
+// B2 — contract specifications
+app.get("/api/b2", (_req, res) => {
+  const data = SYMBOLS.map((s) => ({
+    ticker_id: s.ticker_id,
+    contract_type: "Vanilla",
+    contract_price: store.get(s.ticker_id)?.last_price ?? null,
+    contract_price_currency: s.quote,
+  }));
+  res.json({ success: true, count: data.length, data, timestamp: Date.now() });
+});
+
+// B3 — order book latest snapshot
+app.get("/api/b3", (_req, res) => {
+  const data = SYMBOLS.map((s) => {
+    const ob = orderBookStore.get(s.ticker_id);
+    return {
+      ticker_id: s.ticker_id,
+      timestamp: ob?.timestamp ?? Date.now(),
+      bids: ob?.bids ?? [],
+      asks: ob?.asks ?? [],
+    };
+  });
+  res.json({ success: true, count: data.length, data, timestamp: Date.now() });
+});
+
+// Legacy endpoint — same as /api/b1
 app.get("/api/tickers", (_req, res) => {
   const data = Array.from(store.values()).map(applyMultiplier);
   res.json({ success: true, count: data.length, data, timestamp: Date.now() });
@@ -516,19 +505,14 @@ app.get("/api/health", (_req, res) => {
   res.json({
     status: "ok",
     ws: wsStatus,
-    clients: clients.size,
+    clients_b1: clients.size,
+    clients_b2: clients2.size,
+    clients_b3: clients3.size,
     global_multiplier: GLOBAL_MULTIPLIER,
-    symbols: SYMBOLS.map((s) => ({ ticker_id: s.ticker_id, volume_multiplier: s.volume_multiplier })),
+    symbols: SYMBOLS.map((s) => s.ticker_id),
     timestamp: Date.now(),
   });
 });
-
-
-
-
-
-
-
 
 app.get("/", (_req, res) => {
   const data = Array.from(store.values()).map(applyMultiplier);
@@ -572,7 +556,9 @@ app.get("/", (_req, res) => {
         <p><span class="dot ${wsOpen === wsTotal && wsTotal > 0 ? "dot-green" : "dot-red"}"></span>
         <span class="${wsOpen === wsTotal && wsTotal > 0 ? "green" : "red"}">${wsOpen}/${wsTotal} open</span></p>
       </div>
-      <div class="stat"><span>WS Clients</span><p class="blue">${clients.size}</p></div>
+      <div class="stat"><span>B1 Clients</span><p class="blue">${clients.size}</p></div>
+      <div class="stat"><span>B2 Clients</span><p class="blue">${clients2.size}</p></div>
+      <div class="stat"><span>B3 Clients</span><p class="blue">${clients3.size}</p></div>
       <div class="stat"><span>Active Symbols</span><p class="blue">${data.length}</p></div>
       <div class="stat"><span>Global Multiplier</span><p class="green">${GLOBAL_MULTIPLIER}x</p></div>
       <div class="stat"><span>Supabase Realtime</span><p class="green">● Active</p></div>
@@ -582,26 +568,29 @@ app.get("/", (_req, res) => {
   <div class="box">
     <h2>Endpoints</h2>
     <div class="row">
-      <div class="stat"><span>WebSocket</span><p>wss://your-domain/b1</p></div>
-      <div class="stat"><span>REST Tickers</span><p><a href="/api/tickers">/api/tickers</a></p></div>
+      <div class="stat"><span>B1 WebSocket</span><p>wss://domain/b1</p></div>
+      <div class="stat"><span>B2 WebSocket</span><p>wss://domain/b2</p></div>
+      <div class="stat"><span>B3 WebSocket</span><p>wss://domain/b3</p></div>
+      <div class="stat"><span>B1 REST</span><p><a href="/api/b1">/api/b1</a></p></div>
+      <div class="stat"><span>B2 REST</span><p><a href="/api/b2">/api/b2</a></p></div>
+      <div class="stat"><span>B3 REST</span><p><a href="/api/b3">/api/b3</a></p></div>
       <div class="stat"><span>Health</span><p><a href="/api/health">/api/health</a></p></div>
     </div>
   </div>
   <div class="box">
-    <h2>Live Futures Data</h2>
+    <h2>Live Futures Data — Volume Multiplier: ${GLOBAL_MULTIPLIER}x</h2>
     <table>
       <thead>
         <tr>
           <th>Ticker</th><th>Last Price</th><th>24h Change</th>
-          <th>Volume (USD)</th><th>Open Interest</th>
-          <th>Index Price</th><th>Funding Rate</th><th>Next Funding</th><th>Sym Mul</th>
+          <th>Volume (USD) ×${GLOBAL_MULTIPLIER}</th><th>Open Interest</th>
+          <th>Index Price</th><th>Funding Rate</th><th>Next Funding</th>
         </tr>
       </thead>
       <tbody>
         ${data.map((t) => {
           const chg = t.price_change_24h ?? 0;
           const fr = t.funding_rate ?? 0;
-          const symCfg = SYMBOLS.find(s => s.ticker_id === t.ticker_id);
           return `<tr>
             <td><strong>${t.ticker_id}</strong><br><span class="gray" style="font-size:10px">${t.base_currency}/${t.quote_currency}</span></td>
             <td><strong>$${t.last_price?.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 }) ?? "—"}</strong></td>
@@ -611,7 +600,6 @@ app.get("/", (_req, res) => {
             <td>${t.index_price != null ? "$" + t.index_price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 }) : "—"}</td>
             <td class="${fr >= 0 ? "green" : "red"}">${t.funding_rate != null ? (fr * 100).toFixed(4) + "%" : "—"}</td>
             <td>${t.next_funding_rate_timestamp != null ? new Date(t.next_funding_rate_timestamp).toLocaleTimeString() : "—"}</td>
-            <td class="blue">${symCfg ? symCfg.volume_multiplier + "x" : "—"}</td>
           </tr>`;
         }).join("")}
       </tbody>
@@ -621,7 +609,7 @@ app.get("/", (_req, res) => {
 </body>
 </html>`);
 });
-console.log("WS paths:", (server as any)._events);
+
 // ── START ─────────────────────────────────────────────────
 server.listen(PORT, async () => {
   logDivider();
@@ -630,27 +618,22 @@ server.listen(PORT, async () => {
   console.log(`[Server]    Supabase URL: ${process.env.SUPABASE_URL}`);
   logDivider();
 
-  // 1. Supabase se config load karo
   await loadGlobalMultiplier();
-
-  // 2. Symbols load karo
   await loadSymbols();
-
-  // 3. Realtime subscribe karo
   subscribeRealtime();
-
-  // 4. Binance WS connect karo
   SYMBOLS.forEach(connectSymbol);
-
-  // 5. Funding + OI fetch karo
   fetchFundingRates();
   setInterval(fetchFundingRates, 30000);
 
   logDivider();
   console.log("[Server] ✅ All systems started!");
-  console.log(`[Server]    WS  → ws://localhost:${PORT}/b1`);
-  console.log(`[Server]    REST → http://localhost:${PORT}/api`);
-  console.log(`[Server]    Global Multiplier: ${GLOBAL_MULTIPLIER}x`);
+  console.log(`[Server]    WS  B1 → ws://localhost:${PORT}/b1`);
+  console.log(`[Server]    WS  B2 → ws://localhost:${PORT}/b2`);
+  console.log(`[Server]    WS  B3 → ws://localhost:${PORT}/b3`);
+  console.log(`[Server]    REST B1 → http://localhost:${PORT}/api/b1`);
+  console.log(`[Server]    REST B2 → http://localhost:${PORT}/api/b2`);
+  console.log(`[Server]    REST B3 → http://localhost:${PORT}/api/b3`);
+  console.log(`[Server]    Global Multiplier: ${GLOBAL_MULTIPLIER}x (volume only)`);
   console.log(`[Server]    Active Symbols: ${SYMBOLS.map(s => s.ticker_id).join(", ")}`);
   logDivider();
 });
